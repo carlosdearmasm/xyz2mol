@@ -1,121 +1,151 @@
 #
 # Written by Jan H. Jensen based on this paper Yeonjoon Kim and Woo Youn Kim 
-# "Universal Structure Conversion Method for Organic Molecules: From Atomic Connectivity
-# to Three-Dimensional Geometry" Bull. Korean Chem. Soc. 2015, Vol. 36, 1769-1777 DOI: 10.1002/bkcs.10334
+# "Universal Structure Conversion Method for Organic Molecules:
+# From Atomic Connectivity to Three-Dimensional Geometry" Bull. Korean Chem.
+# Soc. 2015, Vol. 36, 1769-1777 DOI: 10.1002/bkcs.10334
+# 
+# modified by Joaquim Jornet and Carlos de Armas
+# date July 10th, 2018
 #
 import copy
 import itertools
+import numpy as np
 from collections import defaultdict
 
 from rdkit import Chem
-from rdkit.Chem import AllChem, rdmolops
+from rdkit.Chem import AllChem
 
 
-def getUA(maxValence_list, valence_list):
-    UA = []
-    DU = []
-    for i, (maxValence,valence) in enumerate(zip(maxValence_list, valence_list)):
+def get_ua(max_valence_list, valence_list):
+    ua = []
+    du = []
+    for i, (maxValence, valence) in enumerate(zip(max_valence_list,
+                                                  valence_list)):
         if maxValence - valence > 0:
-            UA.append(i)
-            DU.append(maxValence - valence)
-    return UA,DU
+            ua.append(i)
+            du.append(maxValence - valence)
+    return ua, du
 
-def get_atoms_min_connectivity(AC,atomicNumList):
+
+def get_atoms_min_connectivity(ac, atomic_num_list):
     heavy_atom_connectivity = []
-    for atomic_number, row in zip(atomicNumList,AC):
+    for atomic_number, row in zip(atomic_num_list, ac):
         count = 0
-        for bond, atomic_number2 in zip(row,atomicNumList):
-            #print atomicNumList[i]
+        for bond, atomic_number2 in zip(row, atomic_num_list):
             if atomic_number2 != 1 and bond == 1:
                 count += 1
         if atomic_number == 1:
-            count = 9 # no multiple bonds to H's, so ignore
+            # no multiple bonds to H's, so ignore
+            count = 9
         heavy_atom_connectivity.append(count)
 
     min_connectivity = min(heavy_atom_connectivity)
     atoms_min_connectivity = []
-    for i,connectivity in enumerate(heavy_atom_connectivity):
+    for i, connectivity in enumerate(heavy_atom_connectivity):
         if connectivity == min_connectivity:
             atoms_min_connectivity.append(i)
-
     return atoms_min_connectivity
 
 
-def get_BO(AC,valences,get_atomicNumList):
-    BO = AC.copy()
-    BO_valence = list(BO.sum(axis=1))
-    UA,DU = getUA(valences, BO_valence)
-
-    atoms_min_connectivity = get_atoms_min_connectivity(AC,atomicNumList)
-
-    while len(DU) > 1:
-        UA_pairs = itertools.combinations(UA, 2)
-
-        for i,j in UA_pairs:
-            if i in atoms_min_connectivity or j in atoms_min_connectivity:
-                if BO[i,j] > 0:
-                    BO[i,j] += 1
-                    BO[j,i] += 1
-                    break
-        
-        BO_valence = list(BO.sum(axis=1))
-        UA_new, DU_new = getUA(valences, BO_valence)
-
-        if DU_new != DU:
-            UA = copy.copy(UA_new)
-            DU = copy.copy(DU_new)
+def get_bo_old(ac, valences):
+    bo = ac.copy()
+    bo_valence = list(bo.sum(axis=1))
+    ua, du = get_ua(valences, bo_valence)
+    # construct the bond order but not in a random way, it use the same
+    # order read it from the xyz
+    while len(du) > 1:
+        ua_pairs = itertools.combinations(ua, 2)
+        for i, j in ua_pairs:
+            if bo[i, j] > 0:
+                bo[i, j] += 1
+                bo[j, i] += 1
+                break
+        bo_valence = list(bo.sum(axis=1))
+        ua_new, du_new = get_ua(valences, bo_valence)
+        if du_new != du:
+            ua = copy.copy(ua_new)
+            du = copy.copy(du_new)
         else:
             break
-    
-    return BO
+    return bo
 
 
-def BO_is_OK(BO,AC,charge,DU,atomic_valence_electrons,atomicNumList,charged_fragments):
+def get_bo(ac, p_ua, du, valences):
+    bo = ac.copy()
+    ua = list(p_ua)
+    while len(du) > 1:
+        ua_pairs = itertools.combinations(ua, 2)
+        for i, j in ua_pairs:
+            if bo[i, j] > 0:
+                bo[i, j] += 1
+                bo[j, i] += 1
+                break
+        bo_valence = list(bo.sum(axis=1))
+        # bo_valence = list(bo.sum(axis=1)[np.array(ua)])
+        ua_new, du_new = get_ua(valences, bo_valence)
+        if du_new != du:
+            # ua = copy.copy(ua_new)
+            ua = [ua_i for ua_i in p_ua if ua_i in ua_new]
+            du = copy.copy(du_new)
+        else:
+            break
+    return bo
 
+
+def bo_is_ok(bo, ac, charg, du,
+             atomic_valence_electrons,
+             atomic_num_list,
+             charged_frag):
     q = 0
-    if charged_fragments:
-        BO_valences = list(BO.sum(axis=1))
-        for i,atom in enumerate(atomicNumList):
-            q += get_atomic_charge(atom,atomic_valence_electrons[atom],BO_valences[i])
+    if charged_frag:
+        bo_valences = list(bo.sum(axis=1))
+        for i, atom in enumerate(atomic_num_list):
+            q += get_atomic_charge(atom,
+                                   atomic_valence_electrons[atom],
+                                   bo_valences[i])
             if atom == 6:
-                number_of_single_bonds_to_C = list(BO[i,:]).count(1)
-                if number_of_single_bonds_to_C == 2 and BO_valences[i] == 2:
+                number_of_single_bonds_to_c = \
+                    list(bo[i, :]).count(1)
+                if number_of_single_bonds_to_c == 2 and \
+                        bo_valences[i] == 2:
                     q += 1
-                if number_of_single_bonds_to_C == 3 and q + 1 < charge:
+                if number_of_single_bonds_to_c == 3 and \
+                        q + 1 < charg:
                     q += 2
-
-    if (BO-AC).sum() == sum(DU) and charge == q:
+    if (bo - ac).sum() == sum(du) and charg == q:
         return True
     else:
         return False
 
 
-def get_atomic_charge(atom,atomic_valence_electrons,BO_valence):
+def get_atomic_charge(atom, atomic_valence_electrons, bo_valence):
     if atom == 1:
-        charge = 1 - BO_valence
+        char = 1 - bo_valence
     elif atom == 5:
-        charge = 3 - BO_valence
-    elif atom == 15 and BO_valence == 5:
-        charge = 0
-    elif atom == 16 and BO_valence == 6:
-        charge = 0
+        char = 3 - bo_valence
+    elif atom == 15 and bo_valence == 5:
+        char = 0
+    elif atom == 16 and bo_valence == 6:
+        char = 0
     else:
-        charge = atomic_valence_electrons - 8 + BO_valence
+        char = atomic_valence_electrons - 8 + bo_valence
           
-    return charge
+    return char
 
-def clean_charges(mol):
+
+def clean_charges(molec):
     """
-    this is a temporary hack. The real solution is to generate several BO matrices in AC2BO and pick the one
+    this is a temporary hack. The real solution is to
+    generate several BO matrices in ac2bo and pick the one
     with the lowest number of atomic charges
-
     """
     rxn_smarts = ['[N+:1]=[*:2]-[O-:3]>>[N+0:1]-[*:2]=[O-0:3]',
-                  '[N+:1]=[*:2]-[*:3]=[*:4]-[O-:5]>>[N+0:1]-[*:2]=[*:3]-[*:4]=[O-0:5]']
+                  '[N+:1]=[*:2]-[*:3]=[*:4]-[O-:5]>>'
+                  '[N+0:1]-[*:2]=[*:3]-[*:4]=[O-0:5]']
 
-    fragments = Chem.GetMolFrags(mol,asMols=True)
+    fragments = Chem.GetMolFrags(molec, asMols=True)
 
-    for i,fragment in enumerate(fragments):
+    for i, fragment in enumerate(fragments):
         for smarts in rxn_smarts:
             patt = Chem.MolFromSmarts(smarts.split(">>")[0])
             while fragment.HasSubstructMatch(patt):
@@ -123,104 +153,120 @@ def clean_charges(mol):
                 ps = rxn.RunReactants((fragment,))
                 fragment = ps[0][0]
         if i == 0:
-            mol = fragment
+            molec = fragment
         else:
-            mol = Chem.CombineMols(mol,fragment)
+            molec = Chem.CombineMols(molec, fragment)
                         
-    return mol
+    return molec
 
 
-def BO2mol(mol,BO_matrix, atomicNumList,atomic_valence_electrons,mol_charge,charged_fragments):
+def bo2mol(mol, bo_matrix, atomic_num_list,
+           atomic_valence_electrons, mol_charge,
+           charged_fragments):
     """
     based on code written by Paolo Toscani
     """
 
-    l = len(BO_matrix)
-    l2 = len(atomicNumList)
-    BO_valences = list(BO_matrix.sum(axis=1))
+    bo_len = len(bo_matrix)
+    l2 = len(atomic_num_list)
+    bo_valences = list(bo_matrix.sum(axis=1))
 
-    if (l != l2):
-        raise RuntimeError('sizes of adjMat ({0:d}) and atomicNumList '
-            '{1:d} differ'.format(l, l2))
+    if bo_len != l2:
+        raise RuntimeError('sizes of adjMat ({0:d}) '
+                           'and atomicNumList '
+                           '{1:d} differ'.format(bo_len, l2))
+    rw_mol = Chem.RWMol(mol)
 
-    rwMol = Chem.RWMol(mol)
-
-    bondTypeDict = {
+    bond_type_dict = {
         1: Chem.BondType.SINGLE,
         2: Chem.BondType.DOUBLE,
-        3: Chem.BondType.TRIPLE
-    }
+        3: Chem.BondType.TRIPLE}
 
-    for i in range(l):
-        for j in range(i + 1, l):
-            bo = int(round(BO_matrix[i, j]))
-            if (bo == 0):
+    for i in range(bo_len):
+        for j in range(i + 1, bo_len):
+            bo = int(round(bo_matrix[i, j]))
+            if bo == 0:
                 continue
-            bt = bondTypeDict.get(bo, Chem.BondType.SINGLE)
-            rwMol.AddBond(i, j, bt)
-    mol = rwMol.GetMol()
+            bt = bond_type_dict.get(bo, Chem.BondType.SINGLE)
+            rw_mol.AddBond(i, j, bt)
+    mol = rw_mol.GetMol()
 
     if charged_fragments:
-        mol = set_atomic_charges(mol,atomicNumList,atomic_valence_electrons,BO_valences,BO_matrix,mol_charge)
+        mol = set_atomic_charges(mol, atomic_num_list,
+                                 atomic_valence_electrons,
+                                 bo_valences, bo_matrix, mol_charge)
     else:
-        mol = set_atomic_radicals(mol,atomicNumList,atomic_valence_electrons,BO_valences)
+        mol = set_atomic_radicals(mol, atomic_num_list,
+                                  atomic_valence_electrons,
+                                  bo_valences)
 
     return mol
 
-def set_atomic_charges(mol,atomicNumList,atomic_valence_electrons,BO_valences,BO_matrix,mol_charge):
+
+def set_atomic_charges(mol, atomic_num_list,
+                       atomic_valence_electrons,
+                       bo_valences, bo_matrix, mol_charge):
     q = 0
-    for i,atom in enumerate(atomicNumList):
+    for i, atom in enumerate(atomic_num_list):
         a = mol.GetAtomWithIdx(i)
-        charge = get_atomic_charge(atom,atomic_valence_electrons[atom],BO_valences[i])
-        q += charge
+        charg = get_atomic_charge(atom,
+                                  atomic_valence_electrons[atom],
+                                  bo_valences[i])
+        q += charg
         if atom == 6:
-            number_of_single_bonds_to_C = list(BO_matrix[i,:]).count(1)
-            if number_of_single_bonds_to_C == 2 and BO_valences[i] == 2:
+            number_of_single_bonds_to_c = \
+                list(bo_matrix[i, :]).count(1)
+            if number_of_single_bonds_to_c == 2 and \
+                    bo_valences[i] == 2:
                     q += 1
-                    charge = 0
-            if number_of_single_bonds_to_C == 3 and q + 1 < mol_charge:
+                    charg = 0
+            if number_of_single_bonds_to_c == 3 and \
+                    q + 1 < mol_charge:
                     q += 2
-                    charge = 1
+                    charg = 1
 
-        if (abs(charge) > 0):
-            a.SetFormalCharge(int(charge))
-    #rdmolops.SanitizeMol(mol)
+        if abs(charg) > 0:
+            a.SetFormalCharge(int(charg))
+    # rdmolops.SanitizeMol(mol)
     mol = clean_charges(mol)
-
     return mol
 
 
-def set_atomic_radicals(mol,atomicNumList,atomic_valence_electrons,BO_valences):
+def set_atomic_radicals(mol, atomic_num_list,
+                        atomic_valence_electrons,
+                        bo_valences):
     """
     The number of radical electrons = absolute atomic charge
     """
-    for i,atom in enumerate(atomicNumList):
+    for i, atom in enumerate(atomic_num_list):
         a = mol.GetAtomWithIdx(i)
-        charge = get_atomic_charge(atom,atomic_valence_electrons[atom],BO_valences[i])
+        charg = get_atomic_charge(atom,
+                                  atomic_valence_electrons[atom],
+                                  bo_valences[i])
 
-        if (abs(charge) > 0):
-            a.SetNumRadicalElectrons(abs(charge))
+        if abs(charg) > 0:
+            a.SetNumRadicalElectrons(abs(charg))
 
     return mol
 
 
-def AC2BO(AC,atomicNumList,charge,charged_fragments):
+def ac2bo(ac, atomic_num_list, charg, charged_fragments):
     atomic_valence = defaultdict(list)
     atomic_valence[1] = [1]
     atomic_valence[6] = [4]
-    atomic_valence[7] = [4,3]
-    atomic_valence[8] = [2,1]
+    atomic_valence[7] = [4, 3]
+    # atomic_valence[7] = [3]
+    atomic_valence[8] = [2, 1]
     atomic_valence[9] = [1]
     atomic_valence[14] = [4]
-    atomic_valence[15] = [5,4,3]
-    atomic_valence[16] = [6,4,2]
+    atomic_valence[15] = [5, 4, 3]
+    atomic_valence[16] = [6, 4, 2]
     atomic_valence[17] = [1]
     atomic_valence[32] = [4]
     atomic_valence[35] = [1]
     atomic_valence[53] = [1]
     
-
-    atomic_valence_electrons = {}
+    atomic_valence_electrons = dict()
     atomic_valence_electrons[1] = 1
     atomic_valence_electrons[6] = 4
     atomic_valence_electrons[7] = 5
@@ -236,59 +282,78 @@ def AC2BO(AC,atomicNumList,charge,charged_fragments):
 
     # make a list of valences, e.g. for CO: [[4],[2,1]]
     valences_list_of_lists = []
-    for atomicNum in atomicNumList:
+    for atomicNum in atomic_num_list:
         valences_list_of_lists.append(atomic_valence[atomicNum])
 
     # convert [[4],[2,1]] to [[4,2],[4,1]]
     valences_list = itertools.product(*valences_list_of_lists)
 
-    best_BO = AC.copy()
+    best_bo = ac.copy()
 
     # implemenation of algorithm shown in Figure 2
     # UA: unsaturated atoms
     # DU: degree of unsaturation (u matrix in Figure)
     # best_BO: Bcurr in Figure 
-
+    is_best_bo = False
     for valences in valences_list:
-        AC_valence = list(AC.sum(axis=1))
-        UA,DU_from_AC = getUA(valences, AC_valence)
-        if len(UA) == 0 or BO_is_OK(AC,AC,charge,DU_from_AC,atomic_valence_electrons,atomicNumList,charged_fragments):
-            best_BO = AC.copy()
+        ac_valence = list(ac.sum(axis=1))
+        ua, du_from_ac = get_ua(valences, ac_valence)
+        if len(ua) == 0 or bo_is_ok(ac, ac, charg, du_from_ac,
+                                    atomic_valence_electrons,
+                                    atomic_num_list,
+                                    charged_fragments):
+            best_bo = ac.copy()
             break
-        else:
-            BO = get_BO(AC,valences,atomicNumList)
-            if BO_is_OK(BO,AC,charge,DU_from_AC,atomic_valence_electrons,atomicNumList,charged_fragments):
-                best_BO = BO.copy()
+        ua_perm = itertools.permutations(ua)
+        for a in ua_perm:
+            # ind = np.array(a)
+            # du_sort = np.array(du_from_ac)[ind].tolist()
+            bo = get_bo(ac, a, du_from_ac, valences)
+            if bo_is_ok(bo, ac, charg, du_from_ac,
+                        atomic_valence_electrons,
+                        atomic_num_list,
+                        charged_fragments):
+                best_bo = bo.copy()
+                is_best_bo = True
                 break
-            elif BO.sum() > best_BO.sum():
-                    best_BO = BO.copy()
+            elif bo.sum() > best_bo.sum():
+                    best_bo = bo.copy()
+                    print('best comb not found')
+        if is_best_bo:
+            break
+    # TODO FIXME: it is possible tha one molecule has more that one bond order
+    # doe positive charge in some atoms, next step will be generate a list
+    # of bond orders and make a average
+    return best_bo, atomic_valence_electrons
 
-    return best_BO,atomic_valence_electrons
 
-
-def AC2mol(mol,AC,atomicNumList,charge,charged_fragments):
+def ac2mol(mol, ac, atomic_num_list, charg, charged_fragments):
     # convert AC matrix to bond order (BO) matrix
-    BO,atomic_valence_electrons = AC2BO(AC,atomicNumList,charge,charged_fragments)
+    bo, atomic_valence_electrons = ac2bo(ac, atomic_num_list, charg,
+                                         charged_fragments)
 
     # add BO connectivity and charge info to mol object
-    mol = BO2mol(mol,BO, atomicNumList,atomic_valence_electrons,charge,charged_fragments)
+    mol = bo2mol(mol, bo, atomic_num_list,
+                 atomic_valence_electrons,
+                 charg, charged_fragments)
 
     return mol
 
 
-def get_proto_mol(atomicNumList):
-    mol = Chem.MolFromSmarts("[#"+str(atomicNumList[0])+"]")
-    rwMol = Chem.RWMol(mol)
-    for i in range(1,len(atomicNumList)):
-        a = Chem.Atom(atomicNumList[i])
-        rwMol.AddAtom(a)
+def get_proto_mol(atomicnumlist):
+    mol = Chem.MolFromSmarts("[#" + str(atomicnumlist[0]) + "]")
+    rw_mol = Chem.RWMol(mol)
+    for i in range(1, len(atomicnumlist)):
+        a = Chem.Atom(atomicnumlist[i])
+        rw_mol.AddAtom(a)
     
-    mol = rwMol.GetMol()
+    mol = rw_mol.GetMol()
 
     return mol
 
-def get_atomicNumList(atomic_symbols):
-    symbol2number = {}
+
+def get_atomic_numlist(atomic_symbols):
+    symbol2number = dict()
     symbol2number["H"] = 1
     symbol2number["C"] = 6
     symbol2number["N"] = 7
@@ -302,91 +367,99 @@ def get_atomicNumList(atomic_symbols):
     symbol2number["Br"] = 35
     symbol2number["I"] = 53
     
-    atomicNumList = []
+    atomic_num_list = []
     
     for symbol in atomic_symbols:
-        atomicNumList.append(symbol2number[symbol])
+        atomic_num_list.append(symbol2number[symbol])
     
-    return atomicNumList
+    return atomic_num_list
 
-def read_xyz_file(filename):
 
+def read_xyz_file(file_name):
     atomic_symbols = []
     xyz_coordinates = []
-
-    with open(filename, "r") as file:
-        for line_number,line in enumerate(file):
+    charg = 0
+    with open(file_name, "r") as f:
+        for line_number, line in enumerate(f):
             if line_number == 0:
                 num_atoms = int(line)
             elif line_number == 1:
                 if "charge=" in line:
-                    charge = int(line.split("=")[1])
+                    charg = int(line.split("=")[1])
                 else:
-                    charge = 0
+                    charg = 0
             else:
                 atomic_symbol, x, y, z = line.split()
                 atomic_symbols.append(atomic_symbol)
-                xyz_coordinates.append([float(x),float(y),float(z)])
+                xyz_coordinates.append([float(x), float(y),
+                                        float(z)])
+    atomic_num_list = get_atomic_numlist(atomic_symbols)
+    return atomic_num_list, charg, xyz_coordinates
 
-    atomicNumList = get_atomicNumList(atomic_symbols)
-    
-    return atomicNumList,charge,xyz_coordinates
 
-def xyz2AC(atomicNumList,xyz):
+def xyz2ac(atomic_num_list, xyz):
     import numpy as np
-    mol = get_proto_mol(atomicNumList)
+    mol = get_proto_mol(atomic_num_list)
 
     conf = Chem.Conformer(mol.GetNumAtoms())
     for i in range(mol.GetNumAtoms()):
-        conf.SetAtomPosition(i,(xyz[i][0],xyz[i][1],xyz[i][2]))
+        conf.SetAtomPosition(i, (xyz[i][0], xyz[i][1],
+                                 xyz[i][2]))
     mol.AddConformer(conf)
 
-    dMat = Chem.Get3DDistanceMatrix(mol)
+    d_mat = Chem.Get3DDistanceMatrix(mol)
     pt = Chem.GetPeriodicTable()
 
-    num_atoms = len(atomicNumList)
-    AC = np.zeros((num_atoms,num_atoms)).astype(int)
+    num_atoms = len(atomic_num_list)
+    ac = np.zeros((num_atoms, num_atoms)).astype(int)
 
     for i in range(num_atoms):
         a_i = mol.GetAtomWithIdx(i)
-        Rcov_i = pt.GetRcovalent(a_i.GetAtomicNum())*1.30
-        for j in range(i+1,num_atoms):
+        rcov_i = pt.GetRcovalent(a_i.GetAtomicNum()) * 1.24
+        for j in range(i+1, num_atoms):
             a_j = mol.GetAtomWithIdx(j)
-            Rcov_j = pt.GetRcovalent(a_j.GetAtomicNum())*1.30
-            if dMat[i,j] <= Rcov_i + Rcov_j:
-                AC[i,j] = 1
-                AC[j,i] = 1
+            rcov_j = pt.GetRcovalent(a_j.GetAtomicNum()) * 1.24
+            if d_mat[i, j] <= rcov_i + rcov_j:
+                ac[i, j] = 1
+                ac[j, i] = 1
 
-    return AC,mol
+    return ac, mol
 
-def xyz2mol(atomicNumList,charge,xyz_coordinates,charged_fragments):
 
-    # Get atom connectivity (AC) matrix, list of atomic numbers, molecular charge, 
+def xyz2mol(atomic_num_list, char, xyz_coordinates,
+            charged_fragments):
+
+    # Get atom connectivity (AC) matrix,
+    # list of atomic numbers, molecular charge,
     # and mol object with no connectivity information
-    AC,mol = xyz2AC(atomicNumList,xyz_coordinates)
+    ac, mol = xyz2ac(atomic_num_list, xyz_coordinates)
 
-    # Convert AC to bond order matrix and add connectivity and charge info to mol object
-    new_mol = AC2mol(mol,AC,atomicNumList,charge,charged_fragments)
+    # Convert AC to bond order matrix and add
+    # connectivity and charge info to mol object
+    new_mol = ac2mol(mol, ac, atomic_num_list,
+                     char, charged_fragments)
     
     return new_mol
 
+
 if __name__ == "__main__":
-
     import argparse
-
     parser = argparse.ArgumentParser(usage='%(prog)s [options] molecule.xyz')
-    parser.add_argument('structure', metavar='structure', type=str)
+    parser.add_argument('structure', metavar='structure',
+                        type=str)
     args = parser.parse_args()
 
     filename = args.structure
-    charged_fragments = True
-    atomicNumList,charge,xyz_coordinates = read_xyz_file(filename)
+    char_frag = True
+    atomic_numlist, charge, xyz_coord = \
+        read_xyz_file(filename)
 
-    mol = xyz2mol(atomicNumList,charge,xyz_coordinates,charged_fragments)
+    molecule = xyz2mol(atomic_numlist, charge, xyz_coord,
+                       char_frag)
 
     # Canonical hack
-    smiles = Chem.MolToSmiles(mol)
+    smiles = Chem.MolToSmiles(molecule)
     m = Chem.MolFromSmiles(smiles)
     smiles = Chem.MolToSmiles(m)
 
-    print smiles
+    print(smiles)
